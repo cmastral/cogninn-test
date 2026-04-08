@@ -8,7 +8,11 @@ import redis
 import os
 
 
-app = FastAPI()
+app = FastAPI(
+    title="Cogninn API",
+    description="Demo of rate limiting and brute-force protection in FastAPI.",
+    version="1.0.0",
+)
 
 # Rate limiter, key by IP
 limiter = Limiter(key_func=get_remote_address)
@@ -30,13 +34,22 @@ MAX_ATTEMPTS = 5
 LOCKOUT_DURATION = 30 #seconds 
 
 # Redis for brute force protection
-# r = redis.Redis(host="localhost", port=6379, decode_responses=True)
+
+# LOCAL HOSTING 
+# r = redis.Redis(host="localhost", port=6379, decode_responses=True) 
+
+# RAILWAY HOSTING
 r = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"), decode_responses=True)
 
 
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+@app.get("/home")
+@limiter.limit("10/minute")
+async def ping(request: Request):
+    return {"message": "Hello."}
 
 @app.post("/login")
 # limiter for request rate limit
