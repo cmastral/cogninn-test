@@ -2,12 +2,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from slowapi import Limiter
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from starlette.requests import Request as StarletteRequest
 import redis
 import os
-from slowapi.util import get_remote_address
-from starlette.requests import Request as StarletteRequest
+
+# IP resolution — reads X-Forwarded-For when using Railway
+# direct client host for local development
 
 def get_real_ip(request: StarletteRequest) -> str:
     forwarded_for = request.headers.get("X-Forwarded-For")
@@ -16,17 +17,15 @@ def get_real_ip(request: StarletteRequest) -> str:
     return request.client.host
 
 
+# App
 app = FastAPI(
     title="Cogninn API",
     description="Demo of rate limiting and brute-force protection in FastAPI.",
     version="1.0.0",
 )
 
-# Rate limiter, key by IP
-# For Railway deploy
+# Rate limiter — key by IP
 limiter = Limiter(key_func=get_real_ip)
-# For local deploy
-# limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
 @app.exception_handler(RateLimitExceeded)
@@ -37,38 +36,41 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
         headers={"Retry-After": "60"},
     )
 
+
+# Redis — for brute force
+r = redis.Redis.from_url(
+    os.getenv("REDIS_URL", "redis://localhost:6379"),
+    decode_responses=True
+)
+
+
+# Users (NOTE: This should be a database in production)
 USERS = {
     "cogninn": "secure123",
 }
 
 MAX_ATTEMPTS = 5
-LOCKOUT_DURATION = 30 #seconds 
-
-# Redis for brute force protection
-
-# LOCAL HOSTING 
-# r = redis.Redis(host="localhost", port=6379, decode_responses=True) 
-
-# RAILWAY HOSTING
-r = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"), decode_responses=True)
-
+LOCKOUT_DURATION = 30  # seconds
 
 class LoginRequest(BaseModel):
     username: str
     password: str
 
+# Routes
+
 @app.get("/home")
 @limiter.limit("10/minute")
-async def ping(request: Request):
+async def home(request: Request):
     return {"message": "Hello."}
 
+
 @app.post("/login")
-# limiter for request rate limit
-@limiter.limit("5/minute") 
+@limiter.limit("5/minute")
 async def login(request: Request, body: LoginRequest):
-    ip = request.client.host
+    ip = get_real_ip(request)
     key = f"failed:{ip}"
 
+    # Check brute force lockout
     attempts = int(r.get(key) or 0)
     if attempts >= MAX_ATTEMPTS:
         ttl = r.ttl(key)
@@ -77,9 +79,8 @@ async def login(request: Request, body: LoginRequest):
             content={"error": f"Too many failed attempts. Try again in {ttl} seconds."}
         )
 
+    # Validate credentials
     user_password = USERS.get(body.username)
-
-    # Check credentials
     if user_password is None or user_password != body.password:
         r.incr(key)
         r.expire(key, LOCKOUT_DURATION)
@@ -89,5 +90,6 @@ async def login(request: Request, body: LoginRequest):
             content={"error": f"Invalid credentials. {attempts_left} attempts left."}
         )
 
+    # Success — reset failed attempt counter
     r.delete(key)
     return {"message": f"Welcome, {body.username}!"}
