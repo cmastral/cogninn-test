@@ -6,6 +6,14 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import redis
 import os
+from slowapi.util import get_remote_address
+from starlette.requests import Request as StarletteRequest
+
+def get_real_ip(request: StarletteRequest) -> str:
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    return request.client.host
 
 
 app = FastAPI(
@@ -15,7 +23,10 @@ app = FastAPI(
 )
 
 # Rate limiter, key by IP
-limiter = Limiter(key_func=get_remote_address)
+# For Railway deploy
+limiter = Limiter(key_func=get_real_ip)
+# For local deploy
+# limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
 @app.exception_handler(RateLimitExceeded)
